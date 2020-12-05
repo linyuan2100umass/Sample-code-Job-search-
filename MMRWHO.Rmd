@@ -1,0 +1,156 @@
+---
+title: "MMRWHO"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+#install.packages("tidyverse")
+#install.packages("reshape2")
+#install.packages("ggplot2")
+
+#install.packages("dplyr")
+
+library(readxl)
+library(tidyverse)
+library(plyr)
+
+library(dplyr)
+library(ggplot2)
+setwd("/Users/linyuan/Downloads/MMR")
+births <- read.csv("births.csv")
+countries <- read.csv("countries.csv")
+matdeaths <- read.csv("matdeaths.csv")
+mmr<-read.csv("mmr.csv")
+births
+countries
+matdeaths
+mmr
+
+mmr_2017 <- mmr %>% filter(year==2017)
+mmr_2017
+
+mmr_high10 <- mmr_2017 %>% filter(bound=="point") %>% arrange(desc(mmr))
+mmr_high10
+
+mmr_hunt <- mmr %>% filter(year==2017)%>% filter(iso=="SSD"|iso=="TCD"|iso=="SLE"|iso=="NGA"|iso=="CAF"|iso=="SOM"|iso=="MRT"|iso=="GNB"|iso=="LBR"|iso=="AFG") 
+mmr_hunt
+
+mmr_final <- mmr_hunt %>% arrange(iso)
+mmr_final
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+ARR <- function(mmr_final, t1, t2, MMR_t1, MMR_t2) {
+   mmr_final %>% 
+    mutate(change = -1/(t2-t1)*log(MMR_t2/MMR_t1)) 
+}
+
+
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+#ARR
+mmr
+mmr_2000 <- mmr %>% filter(year==2000) %>% filter(bound=="point")
+mmr_2000
+
+mmr_2017 <- mmr %>% filter(year==2017) %>% filter(bound=="point")
+mmr_2017
+
+mmr_merge<-merge(mmr_2000,mmr_2017,by="iso")
+mmr_merge
+
+mmr_merge <- mmr_merge %>% mutate(ARRcolumn=-1/(year.y-year.x)*log(mmr.y/mmr.x))
+mmr_merge
+```
+
+
+```{r}
+matdeaths
+table(matdeaths$year)
+
+#estimated number of maternal deaths for 2017 as well as upper and lower bounds
+mat_2017 <- matdeaths %>% filter(year==2017)
+mat_2017
+
+#the share of maternal deaths as a proportion of the global total for 2017 for each of the 10 countries
+mat_hunt<- mat_2017 %>% filter(year==2017)%>% filter(iso=="SSD"|iso=="TCD"|iso=="SLE"|iso=="NGA"|iso=="CAF"|iso=="SOM"|iso=="MRT"|iso=="GNB"|iso=="LBR"|iso=="AFG") %>% filter(bound=="point") %>% mutate(prop=(value/294682)*100)
+mat_hunt
+
+mat_hold<-mat_2017 %>% filter(bound=="point") 
+mat_hold
+
+#total number of maternal deaths in 2017 for all countries in dataset
+#mysum=294682
+mat_hold <- mat_hold %>% summarize(mysum=sum(value))
+mat_hold
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+births
+#countries contains regions separation
+countries
+matdeaths
+mmr
+countries1<-countries %>% select(iso,region)
+countries1
+regions<-merge(countries1,mmr,by="iso")
+regions
+
+regions1 <- regions %>% filter(bound=="point") %>% group_by(region) %>% summarize(mmrbyregion=sum(mmr)) 
+regions1
+
+#using maternal deaths value instead of per 100,000
+
+region_plot<-regions %>% filter(bound=="point") %>% group_by(region) %>% ggplot(aes(x=year,y=mmr,group=region))+geom_line(aes(color=region))
+region_plot
+
+
+region_plot1<-regions %>% filter(bound=="point") %>% filter(region=="Africa")  
+region_plot1
+
+test2<-ggplot(region_plot1,aes(x=year,y=mmr,group=iso))+geom_line(aes(color=iso))
+test2
+
+test<-ggplot(regions,aes(x=year,y=mmr,group=region))+geom_line(aes(color=region))
+test
+
+#bymean
+regions2 <- regions %>% filter(bound=="point") %>% group_by(region,year) %>% summarize(regionmean=mean(mmr)) 
+regions2
+
+
+
+```
+
+
+```{r}
+library(data.table)
+fwrite(mmr_final,file="/Users/linyuan/Downloads/MMR/task1part1_YuanLin",sep=",")
+fwrite(mmr_merge, file="/Users/linyuan/Downloads/MMR/task1part2_YuanLin",sep=",")
+fwrite(mat_2017,file="/Users/linyuan/Downloads/MMR/task1part3_YuanLin",sep=",")
+fwrite(mat_hunt,file="/Users/linyuan/Downloads/MMR/task1part4_YuanLin",sep=",")
+#ggsave which I believe is the way to get a plot saved made R crash with session abort, so thus I resorted to another result format
+#ggsave(region_plot,file="/Users/linyuan/Downloads/MMR/task2_Yuanlin")
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
