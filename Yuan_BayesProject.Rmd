@@ -1,0 +1,566 @@
+---
+title: "BayesProject"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+
+rm(list=ls())
+
+
+rmvnorm<-
+function(n,mu,Sigma) {
+  p<-length(mu)
+  res<-matrix(0,nrow=n,ncol=p)
+  if( n>0 & p>0 ) {
+  E<-matrix(rnorm(n*p),n,p)
+  res<-t(  t(E%*%chol(Sigma)) +c(mu))
+                   }
+  res
+                       }
+
+library(tidyverse)
+library(readr)
+library(readxl)
+
+# read data
+setwd("/Users/linyuan/Downloads")
+
+data <- 
+read_excel("covid.xlsx", sheet="covid1")
+
+data
+
+head(data)
+```
+
+
+```{r}
+#health1 is baseline which is with placebo
+
+
+
+plot(data$trt,data$health,
+	xlab="Treatment",ylab="Health",col = rgb(0, 0.1, 0.2, 0.3))
+
+plot(data$id.days,data$health,
+	xlab="Day In Observation",ylab="Health",col = rgb(0, 0.1, 0.2, 0.3))
+```
+
+
+```{r}
+#lm simple linear fit without considering correlation between repeated measures
+#x=T asks R to build a design matrix 
+setwd("/Users/linyuan/Downloads")
+data <- 
+read_excel("covid.xlsx", sheet="covid1")
+
+data
+
+head(data)
+
+fit <- lm(health~poly(id.days,2,raw=T),data=data,x=T)
+X <- fit$x
+X
+
+# look at t(X)%*%X
+t(X)%*%X
+
+
+#Here starting with posterior inference sampling 
+
+
+#basic metrics
+y <- data$health
+n <- length(y)
+p <- dim(X)[2]
+XtX <- t(X)%*%X
+Xty <- t(X)%*%y
+S <- 10000
+
+# prior parameters
+
+beta.0 <- rep(0,p)
+Sigma.0 <- 100000*diag(rep(1,p))
+iSigma.0 <- (1/100000)*diag(rep(1,p))
+
+nu.0  <- 0.0001
+sigma2.0 <- 0.0001
+
+
+## store mcmc samples in these objects
+# NOTE: setting these up ahead of time computationally less intensive
+
+beta.post<-matrix(nrow=S,ncol=p)
+sigma2.post<-rep(NA,S)
+
+
+## starting value
+set.seed(1)
+sigma2 <- 1
+
+## MCMC algorithm
+for(s in 1:S) 
+{
+
+	#update beta
+	V.beta<- solve(iSigma.0 + XtX/sigma2)
+	E.beta<- V.beta%*%(iSigma.0%*%beta.0 + Xty/sigma2)
+	beta<- as.vector(rmvnorm(1, E.beta,V.beta))
+
+	#update sigma2
+	nu.n<- nu.0+n
+	ss.n<-(nu.0*sigma2.0) + sum((y-X%*%beta)^2)
+	sigma2<-1/rgamma(1,nu.n/2, ss.n/2)
+
+	#save results of this draw
+	beta.post[s,]<-beta
+	sigma2.post[s]<-sigma2
+}
+                        
+                        
+library(coda)                   
+effectiveSize(beta.post)
+effectiveSize(sigma2.post)
+
+#par(mfrow=c(5,2))
+plot(as.mcmc(beta.post))
+
+# Suppose want to have an estimate of the maximum health
+# level (and a CI) That would be challenginging to 
+# get with standard regression methods.
+
+# It's easy for a Bayesian (assuming model is right):
+# 	- evaluate the maximum for each sample from the posterior 
+# (interpolate)
+# 	- the mean of that sample is the posterior mean estiamte of 
+# the max
+# 	- quantiles give a CI
+
+
+
+n.grid <- 401
+time.grid <- seq(from=min(data$id.days),to=max(data$id.days),length=n.grid)
+X.grid <- cbind(rep(1,n.grid),time.grid,time.grid^2)
+
+
+keep.on.grid <- matrix(nrow=S,ncol=401)
+
+for (s in 1:S)
+	keep.on.grid[s,] <- as.vector(X.grid%*%beta.post[s,])
+
+par(mfrow=c(1,1))
+plot(data$id.days,data$health,xlab="Time(days)",ylab="Health",type="n",
+		ylim=range(keep.on.grid))
+for (s in seq(from=1,to=S,by=100)) # plotting them all takes too long
+	lines(time.grid,keep.on.grid[s,],col="grey")
+points(data$id.days,data$health,pch=16)
+
+#####
+post.mean.grid <- apply(keep.on.grid,2,mean)
+lower.grid <- apply(keep.on.grid,2,quantile,p=.005)
+upper.grid <- apply(keep.on.grid,2,quantile,p=.995)
+
+#####
+plot(data$id.days,data$health,xlab="Time(Days)",ylab="Health",type="n",
+		ylim=range(keep.on.grid))
+
+lines(time.grid,post.mean.grid,lwd=2)
+lines(time.grid,lower.grid,lty=2)
+lines(time.grid,upper.grid,lty=2)
+
+points(data$id.days,data$health,pch=16)
+legend("bottomright",legend=c("Posterior Mean","99% CI"),lty=c(1,2),lwd=c(2,1))
+
+
+# about the max:
+max.post <- apply(keep.on.grid,1,max)
+max.time <- apply(keep.on.grid,2,max)
+max.se <- apply(keep.on.grid,2,sd)
+mean(max.se)
+mean(max.time)
+which.max(max.time)
+
+plot(as.mcmc(max.post))
+mean(max.post)
+quantile(max.post,p=c(.025,.975))
+which.max(max.post)
+which.max(mean(max.post))
+
+max.inds <- apply(keep.on.grid,1,which.max)
+max.times <- time.grid[max.inds]
+#max.inds
+max.times
+mean(max.times)
+quantile(max.times,p=c(.025,.975))
+
+
+
+
+```
+
+
+```{r}
+#9X% Confidence Interval Graphs
+rm(list=ls())
+## mvnormal simulation
+rmvnorm<-function(n,mu,Sigma)
+{ 
+  E<-matrix(rnorm(n*length(mu)),n,length(mu))
+  t(  t(E%*%chol(Sigma)) +c(mu))
+}
+
+## Wishart simulation
+rwish<-function(n,nu0,S0)
+{
+  sS0 <- chol(S0)
+  S<-array( dim=c( dim(S0),n ) )
+  for(i in 1:n)
+  {
+     Z <- matrix(rnorm(nu0 * dim(S0)[1]), nu0, dim(S0)[1]) %*% sS0
+     S[,,i]<- t(Z)%*%Z
+  }
+  S[,,1:n]
+}
+```
+
+
+```{r}
+#from BayesPS7 guider
+# read data
+glucose <- 
+read.csv("https://people.math.umass.edu/~jstauden/glucinsul.csv")
+
+head(glucose)
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+setwd("/Users/linyuan/Downloads")
+mydata <- 
+read_excel("covid2.xlsx", sheet="covid2")
+
+head(mydata)
+mydata
+```
+
+
+```{r}
+mydata$health21 <- mydata$health2-mydata$health1
+mydata$health31<-mydata$health3-mydata$health1
+mydata$health41<-mydata$health4-mydata$health1
+mydata$health51<-mydata$health5-mydata$health1
+mydata$health61<-mydata$health6-mydata$health1
+
+mean(mydata$health1)
+mean(mydata$health2)
+mean(mydata$health3)
+mean(mydata$health4)
+mean(mydata$health5)
+mean(mydata$health6)
+
+mean(mydata$health21)
+mean(mydata$health31)
+mean(mydata$health41)
+mean(mydata$health51)
+mean(mydata$health61)
+
+
+library(lme4)
+fit.mixed.model1 <- lmer(health2~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model1)$coef
+
+fit.mixed.model2 <- lmer(health3~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model2)$coef
+
+fit.mixed.model3 <- lmer(health4~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model3)$coef
+
+fit.mixed.model4 <- lmer(health5~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model4)$coef
+
+fit.mixed.model5 <- lmer(health6~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model5)$coef
+
+fit.mixed.model6 <- lmer(health21~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model6)$coef
+
+fit.mixed.model7 <- lmer(health31~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model7)$coef
+
+fit.mixed.model8 <- lmer(health41~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model8)$coef
+
+fit.mixed.model9 <- lmer(health51~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model9)$coef
+
+fit.mixed.model10 <- lmer(health61~health1+(id.days|id.num),data=mydata)
+summary(fit.mixed.model10)$coef
+
+
+
+
+
+
+
+# Bayesian solution 
+
+
+# ids<-unique(glucose$id_num)
+# Y <- X <- list(length=length(unique(glucose$id_num)))
+# n <- length(ids)
+# N <- as.vector(table(glucose$id_num))
+# counter <- 1
+# for (i in ids)
+# {
+# 	temp <- subset(glucose,id_num==i)
+# 	X[[counter]] <- cbind(rep(1,length(temp$basegluc)),temp$basegluc)
+# 	Y[[counter]] <- temp$of_b
+# 	counter <- counter+1
+# }
+
+ids <- unique(mydata$id.num)
+
+
+Y <- X <- list(length=length(unique(mydata$id.num)))
+n <- 210
+N <- as.vector(table(mydata$id.num))
+counter <- 1
+for (i in ids)
+{
+	temp <- subset(mydata,id.num==i)
+	X[[counter]] <- cbind(rep(1,length(temp$health1)),temp$health1)
+	Y[[counter]] <- temp$health51
+	counter <- counter+1
+}
+
+
+
+#Monte Carlo iteration
+#MC.N <- 1000
+# p=2
+p <- 2
+
+#to confirm p=2 
+p1 <- dim(X[[1]])[2]
+p1
+
+
+#Prior parameters
+#Non-informative priors: 
+#nu0: sample size for within group precision very small
+#s20:prior precision for within group precision very small. I think here that both prior precision big or small is non-informative.
+#eta0: sample size for variance of group means very small
+#tau0: prior precision for precision of group means
+#mu0: prior population mean 
+#gamma0: prior population variance
+nu0 <- s20 <- 0.0001
+eta0 <- p+2  
+#Setting prior thetas to 0. Thetas represent prior group means.
+Theta0 <- rep(0,p)
+Sigma.0 <- diag(rep(.0001,p))
+iSigma.0 <- solve(Sigma.0)
+L0 <- diag(rep(10000,p))
+#inverse L0 where solving for Ax=b
+iL0 <- solve(L0)
+
+# For storage per Gibbs sampling iteration
+BETAs <- matrix(NA,n,p)
+
+# For storage of estimates
+keep.BETAs <- matrix(NA,MC.N,p*n)
+keep.Beta <- matrix(NA,MC.N,p)
+keep.iSigma <- matrix(NA,MC.N,p^2)
+keep.s2 <- rep(NA,MC.N)
+
+
+# starting values 
+s2 <- 1
+iSigma <- diag(rep(1,p))
+Beta <- rep(1,p)
+
+#MCMC
+for(s in 1:1000) {
+  ##update beta_j 
+  for(j in 1:210) 
+  {  
+    Vj<-solve( iSigma + (t(X[[j]])%*%X[[j]])/s2 )
+    Ej<-Vj%*%( iSigma%*%Beta + (t(X[[j]])%*%Y[[j]])/s2 )
+    BETAs[j,]<-rmvnorm(1,Ej,Vj) 
+  } 
+  ##
+
+  ##update Beta
+  Lm<-  solve( iL0 +  n*iSigma )
+  mum<- Lm%*%( iL0%*%Theta0 + iSigma%*%apply(BETAs,2,sum))
+  Beta <- t(rmvnorm(1,mum,Lm))
+  ##
+
+  ##update Sigma
+  mbeta<-matrix(Beta,n,p,byrow=TRUE)
+  iSigma<-rwish(1, eta0+n, solve( Sigma.0+t(BETAs-mbeta)%*%(BETAs-mbeta) ) )
+  ##
+
+  ##update s2
+  RSS<-0
+  for(j in 1:n) { RSS<-RSS+sum( (Y[[j]]-X[[j]]%*%BETAs[j,] )^2 ) }
+  s2<-1/rgamma(1,(nu0+sum(N))/2, (nu0*s20+RSS)/2 )
+  ##
+  ##For storage of results
+ 
+	keep.BETAs[s,] <- c(BETAs)
+	keep.Beta[s,] <- Beta
+	keep.iSigma[s,] <- c(iSigma)
+	keep.s2[s] <- s2
+
+	print(s)
+}
+```
+
+
+```{r}
+# for(s in 1:100) {
+#   ##update beta_j 
+#   for(j in 1:210) 
+#   {  
+#     Vj<-1/(n[j]/sigma2+1/tau2)
+#     Ej<-Vj*(ybar[j]*n[j]/sigma2+mu/tau2)
+#     BETAs[j,]<-rmvnorm(1,Ej,Vj) 
+#   } 
+#   ##
+# 
+#   ##update Beta
+#   Lm<-  solve( iL0 +  n*iSigma )
+#   mum<- Lm%*%( iL0%*%Theta0 + iSigma%*%apply(BETAs,2,sum))
+#   Beta <- t(rmvnorm(1,mum,Lm))
+#   ##
+# 
+#   ##update Sigma
+#   mbeta<-matrix(Beta,n,p,byrow=TRUE)
+#   iSigma<-rwish(1, eta0+n, solve( Sigma.0+t(BETAs-mbeta)%*%(BETAs-mbeta) ) )
+#   ##
+# 
+#   ##update s2
+#   RSS<-0
+#   for(j in 1:n) { RSS<-RSS+sum( (Y[[j]]-X[[j]]%*%BETAs[j,] )^2 ) }
+#   s2<-1/rgamma(1,(nu0+sum(N))/2, (nu0*s20+RSS)/2 )
+#   ##
+#   ##For storage of results
+#  
+# 	keep.BETAs[s,] <- c(BETAs)
+# 	keep.Beta[s,] <- Beta
+# 	keep.iSigma[s,] <- c(iSigma)
+# 	keep.s2[s] <- s2
+# 
+# 	print(s)
+# }
+```
+
+
+```{r}
+Beta.hat <- apply(keep.Beta,2,mean)
+
+BETAs.hat <- matrix(apply(keep.BETAs,2,mean),n,p)
+iSIGMA.hat <- matrix(apply(keep.iSigma,2,mean),2,2)
+
+n.grid <- 401
+health1.grid <- seq(min(mydata$health1),max(mydata$health1),length=401)
+X.grid <- cbind(rep(1,401),health1.grid)
+S<-10
+keep.on.grid <- matrix(nrow=10,ncol=401)
+for (s in 1:S)
+  keep.on.grid[s,] <- as.vector(X.grid %*% BETAs.hat[s,])
+
+
+mean<-mean(keep.on.grid)
+lower<-quantile(keep.on.grid,0.05)
+upper<-quantile(keep.on.grid,0.95)
+mean
+lower
+upper
+
+#Results: with MC.N=100 health21 = 44 95% CI [3.67,82]
+#Results: with MC.N=100 health31=72.5 95% CI [42.8,97.1]
+#Results: with MC.N=100 health41=58.3     95% CI [12.3,90.1]
+#Results: with MC.N=100 health51=72.5    95% CI [44.9,92.6]
+#Results: with MC.N=100 health61=76.2     95% CI [45.4,98.1]
+
+#Results: with MC.N=1000 health21=40.4  95% CI [8.64,84]
+#Results: with MC.N=1000 health31=67.7  95% CI [41.2,98.7]
+#Results: with MC.N=1000 health41=53.8  95% CI [12,91.8]
+#Results: with MC.N=1000 health51=67.3  95% CI [41.6,94]
+#Results: with MC.N=1000 health61=70.8  95% CI [42.7,100]
+
+#Results: with MC.N=1000 health21=40.1  99% CI [3.78,91.1]
+#Results: with MC.N=1000 health31=67.8  99% CI [35.9,101]
+#Results: with MC.N=1000 health41=53.5  99% CI [3.3,98.9]
+#Results: with MC.N=1000 health51=67.3  99% CI [36,96.5]
+#Results: with MC.N=1000 health61=70.8  99% CI [38.2,106]
+
+#Results: with MC.N=1000 health21=40.1  90% CI [10.1,79.1]
+#Results: with MC.N=1000 health31=67.8  90% CI [43,96.3]
+#Results: with MC.N=1000 health41=53.5  90% CI [17,88.2]
+#Results: with MC.N=1000 health51=67.3  90% CI [44.8,91.5]
+#Results: with MC.N=1000 health61=70.8  90% CI [45.5,97]
+
+
+
+
+#When MC.N=100 (Note that this is a test)
+toplot <- data.frame(cond=c("TRT2","TRT3","TRT4","TRT5","TRT6"),means=c(44,72.5,58.3,72.5,76.2),lower=c(3.67,42.8,12.3,44.9,45.4),upper=c(82,97.1,90.1,92.6,98.1))
+
+#MC.N=1000 95% CI
+toplot1 <- data.frame(cond=c("TRT2","TRT3","TRT4","TRT5","TRT6"),means=c(40.4,67.7,53.8,67.3,70.8),lower=c(8.64,41.2,12,41.6,42.7),upper=c(84,98.7,91.8,94,100))
+
+#MC.N=1000 99% CI
+toplot2 <- data.frame(cond=c("TRT2","TRT3","TRT4","TRT5","TRT6"),means=c(40.1,67.8,53.5,67.3,70.8),lower=c(3.78,35.9,3.3,35,38.2),upper=c(91.1,101,98.9,96.5,106))
+
+#MC.N=1000 90% CI
+toplot3 <- data.frame(cond=c("TRT2","TRT3","TRT4","TRT5","TRT6"),means=c(40.1,67.8,53.5,67.3,70.8),lower=c(10.1,43,17,44.8,45.5),upper=c(79.1,96.3,88.2,91.5,97))
+
+
+
+#Now plotting to suggested plot 
+plot(c(0,1),c(0,1), 
+     xlim=c(-0.5,7),ylim=range(c(0,c(toplot3[,-1]))),type="n",axes=F,
+     ylab="Difference in health (90% CI)",
+     xlab="")
+axis(2)
+axis(1,at=c(0,1,2,3,4),labels=toplot3$cond)
+abline(h=0,lty=2)
+points(c(0,1,2,3,4),toplot3$means,pch=16)
+lines(c(0,0),c(toplot3$lower[1],toplot3$upper[1]))
+lines(c(1,1),c(toplot3$lower[2],toplot3$upper[2]))
+lines(c(2,2),c(toplot3$lower[3],toplot3$upper[3]))
+lines(c(3,3),c(toplot3$lower[4],toplot3$upper[4]))
+lines(c(4,4),c(toplot3$lower[5],toplot3$upper[5]))
+```
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
