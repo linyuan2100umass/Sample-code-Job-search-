@@ -1,0 +1,656 @@
+---
+title: "BayesPS7"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r}
+#Oct 14
+#relevant for question 1
+
+rm(list=ls())
+
+# from Hoff
+rmvnorm<-
+function(n,mu,Sigma) {
+  p<-length(mu)
+  res<-matrix(0,nrow=n,ncol=p)
+  if( n>0 & p>0 ) {
+  E<-matrix(rnorm(n*p),n,p)
+  res<-t(  t(E%*%chol(Sigma)) +c(mu))
+                   }
+  res
+                       }
+
+
+
+# read data
+data <- 
+read.csv("https://people.math.umass.edu/~jstauden/glucinsul.csv")
+
+head(data)
+
+# Just work with "basegluc" column for now. 
+# (This was a pre treatment measurement.)
+# base = "baseline"
+# We'll ignore that there are multiple measurements 
+# on 10 people for now.
+
+
+
+plot(data$Time,data$basegluc,
+	xlab="Time (min)",ylab="Blood Glucose")
+
+# x=T asks R to build a design matrix for you
+fit <- lm(basegluc~poly(Time,4,raw=T),data=data,x=T)
+X <- fit$x
+X
+
+# look at t(X)%*%X
+t(X)%*%X
+
+# better rescale Time - make hours
+
+data$Time <- data$Time/60
+
+fit <- lm(basegluc~poly(Time,4,raw=T),data=data,x=T)
+X <- fit$x
+
+# look at t(X)%*%X
+t(X)%*%X
+
+
+# let's get a sample from the posterior and see what 
+# we can do with it.
+
+
+## some convenient quantites
+y <- data$basegluc
+n <- length(y)
+p <- dim(X)[2]
+XtX <- t(X)%*%X
+Xty <- t(X)%*%y
+S <- 10000
+
+# prior parameters
+
+beta.0 <- rep(0,p)
+Sigma.0 <- 100000*diag(rep(1,p))
+iSigma.0 <- (1/100000)*diag(rep(1,p))
+
+nu.0  <- 0.0001
+sigma2.0 <- 0.0001
+
+## store mcmc samples in these objects
+# NOTE: setting these up ahead of time is *much* faster than 
+# adding a new row to a matrix for each interation of the loop.
+
+beta.post<-matrix(nrow=S,ncol=p)
+sigma2.post<-rep(NA,S)
+
+
+## starting value
+set.seed(1)
+sigma2 <- 1
+
+## MCMC algorithm
+for( s in 1:S) 
+{
+
+	#update beta
+	V.beta<- solve(  iSigma.0 + XtX/sigma2 )
+	E.beta<- V.beta%*%( iSigma.0%*%beta.0 + Xty/sigma2 )
+	beta<- as.vector(rmvnorm(1, E.beta,V.beta) )
+
+	#update sigma2
+	nu.n<- nu.0+n
+	ss.n<-nu.0*sigma2.0 + sum(  (y-X%*%beta)^2 )
+	sigma2<-1/rgamma(1,nu.n/2, ss.n/2)
+
+	#save results of this draw
+	beta.post[s,]<-beta
+	sigma2.post[s]<-sigma2
+}
+                        
+                        
+library(coda)                   
+effectiveSize(beta.post)
+effectiveSize(sigma2.post)
+
+#par(mfrow=c(5,2))
+plot(as.mcmc(beta.post))
+
+# Suppose I want an estimate of the maximum glucose 
+# level (and a CI) That would be challenginging to 
+# get with standard regression methods.
+
+# It's easy for a Bayesian (assuming model is right):
+# 	- evaluate the maximum for each sample from the posterior 
+# (interpolate)
+# 	- the mean of that sample is the posterior mean estiamte of 
+# the max
+# 	- quantiles give a CI
+
+# (Something to think about: suppose I wanted est and CI for
+# the time where the max occurs. You'll do that later!)
+
+n.grid <- 401
+time.grid <- seq(from=min(data$Time),to=max(data$Time),length=n.grid)
+X.grid <- cbind(rep(1,n.grid),time.grid,time.grid^2,time.grid^3,time.grid^4)
+
+
+keep.on.grid <- matrix(nrow=S,ncol=401)
+
+for (s in 1:S)
+	keep.on.grid[s,] <- as.vector(X.grid%*%beta.post[s,])
+
+par(mfrow=c(1,1))
+plot(data$Time,data$basegluc,xlab="Time (min)",ylab="Blood Glucose",type="n",
+		ylim=range(keep.on.grid))
+for (s in seq(from=1,to=S,by=100)) # plotting them all takes too long
+	lines(time.grid,keep.on.grid[s,],col="grey")
+points(data$Time,data$basegluc,pch=16)
+
+#####
+
+# better:
+post.mean.grid <- apply(keep.on.grid,2,mean)
+lower.grid <- apply(keep.on.grid,2,quantile,p=.025)
+upper.grid <- apply(keep.on.grid,2,quantile,p=.975)
+
+#####
+plot(data$Time,data$basegluc,xlab="Time (min)",ylab="Blood Glucose",type="n",
+		ylim=range(keep.on.grid))
+
+lines(time.grid,post.mean.grid,lwd=2)
+lines(time.grid,lower.grid,lty=2)
+lines(time.grid,upper.grid,lty=2)
+
+points(data$Time,data$basegluc,pch=16)
+legend("topright",legend=c("Posterior Mean","95% CI"),lty=c(1,2),lwd=c(2,1))
+
+
+# about the max:
+max.post <- apply(keep.on.grid,1,max)
+max.time <- apply(keep.on.grid,2,max)
+max.se <- apply(keep.on.grid,2,sd)
+mean(max.se)
+which.max(max.time)
+
+plot(as.mcmc(max.post))
+mean(max.post)
+quantile(max.post,p=c(.025,.975))
+which.max(max.post)
+which.max(mean(max.post))
+
+max.inds <- apply(keep.on.grid,1,which.max)
+max.times <- time.grid[max.inds]
+max.inds
+max.times
+mean(max.times)
+quantile(max.times,p=c(.025,.975))
+
+
+
+# back to the prior. Consider:
+
+	#update beta
+	V.beta<- solve(  iSigma.0 + XtX/sigma2 )
+	E.beta<- V.beta%*%( iSigma.0%*%beta.0 + Xty/sigma2 )
+
+
+# Uninformative means that iSigma.0 is small relative to XtX/sigma (elementwise)...
+# and iSigma.0%*%beta.0 small relative to Xty/sigma2
+# awkward b/c that involves the comparision of a lot of numbers.
+# It'd be nice to just choose a number to make the prior uninforative...
+# That suggests an idea for a prior! (go to notes)
+
+
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+# #Pig
+# #Relevant for problem 2, but this is not my final product
+# install.packages("SemiPar")
+# rm(list=ls())
+# ## mvnormal simulation
+# rmvnorm<-function(n,mu,Sigma)
+# { 
+#   E<-matrix(rnorm(n*length(mu)),n,length(mu))
+#   t(  t(E%*%chol(Sigma)) +c(mu))
+# }
+# 
+# ## Wishart simulation
+# rwish<-function(n,nu0,S0)
+# {
+#   sS0 <- chol(S0)
+#   S<-array( dim=c( dim(S0),n ) )
+#   for(i in 1:n)
+#   {
+#      Z <- matrix(rnorm(nu0 * dim(S0)[1]), nu0, dim(S0)[1]) %*% sS0
+#      S[,,i]<- t(Z)%*%Z
+#   }
+#   S[,,1:n]
+# }
+# 
+# 
+# library(SemiPar)
+# data(pig.weights)
+# 
+# head(pig.weights)
+# set.seed(2)
+# 
+# # delete data from a lot of the pigs... (they're OK, don't worry!)
+# n <- dim(pig.weights)[1]
+# delete.inds <- sample((1:n),round(n/2))
+# pig.weights <- pig.weights[-delete.inds,]		
+# 
+# 
+# 
+# plot(pig.weights$num.weeks,pig.weights$weight,
+# 	xlab="Weeks",ylab="Weight",type="n",
+# 	sub="different colors are different pigs")
+# 
+# #This part does not work
+# ids <- unique(pig.weights$id.num)
+# for (i in ids[c(9,10)])
+# {
+# 	temp <-subset(pig.weights,id.num==i)
+# 	points(temp$num.weeks,temp$weight,pch=16,col=i)
+# 	lines(abline(lm(weight~num.weeks,data=temp),col=i))
+# }
+# 
+# plot(pig.weights$num.weeks,pig.weights$weight,
+# 	xlab="Weeks",ylab="Weight",type="n",
+# 	sub="different colors are different pigs")
+# for (i in ids)
+# {
+# 	temp <-subset(pig.weights,id.num==i)
+# 	lines(abline(lm(weight~num.weeks,data=temp),col=i))
+# }
+# 
+# # Let's compare a linear mixed model with a simple linear model
+# 
+# 
+# library(lme4)
+# fit.mixed.model <- lmer(weight~num.weeks+(num.weeks|id.num),data=pig.weights)
+# summary(fit.mixed.model)$coef
+# 
+# fit.lm <- lm(weight~num.weeks,data=pig.weights)
+# summary(fit.lm)$coef
+# 
+# # note difference in estimates and std errors...
+# 
+# 
+# # now let's see a Bayesian solution with code modified from Hoff
+# 
+# Y <- X <- list(length=length(unique(pig.weights$id.num)))
+# n <- length(ids)
+# N <- as.vector(table(pig.weights$id.num))
+# counter <- 1
+# for (i in ids)
+# {
+# 	temp <- subset(pig.weights,id.num==i)
+# 	X[[counter]] <- cbind(rep(1,length(temp$num.weeks)),temp$num.weeks)
+# 	Y[[counter]] <- temp$weight
+# 	counter <- counter+1
+# }
+# 
+# 
+# MC.N <- 10000
+# ## Setup
+# p <- dim(X[[1]])[2]
+# 
+# # prior params
+# nu0 <- s20 <- 0.0001
+# eta0 <- p+2  
+# Theta0 <- rep(0,p)
+# Sigma.0 <- diag(rep(.0001,p))
+# iSigma.0 <- solve(Sigma.0)
+# L0 <- diag(rep(10000,p))
+# iL0 <- solve(L0)
+# 
+# # For storage in each Gibbs sampling iteration
+# BETAs <- matrix(NA,n,p)
+# 
+# # Storage of Estimates
+# keep.BETAs <- matrix(NA,MC.N,p*n)
+# keep.Beta <- matrix(NA,MC.N,p)
+# keep.iSigma <- matrix(NA,MC.N,p^2)
+# keep.s2 <- rep(NA,MC.N)
+# 
+# 
+# # starting values 
+# s2 <- 1
+# iSigma <- diag(rep(1,p))
+# Beta <- rep(1,p)
+# 
+# ## MCMC
+# for(s in 1:MC.N) {
+#   ##update beta_j 
+#   for(j in 1:n) 
+#   {  
+#     Vj<-solve( iSigma + t(X[[j]])%*%X[[j]]/s2 )
+#     Ej<-Vj%*%( iSigma%*%Beta + t(X[[j]])%*%Y[[j]]/s2 )
+#     BETAs[j,]<-rmvnorm(1,Ej,Vj) 
+#   } 
+#   ##
+# 
+#   ##update Beta
+#   Lm<-  solve( iL0 +  n*iSigma )
+#   mum<- Lm%*%( iL0%*%Theta0 + iSigma%*%apply(BETAs,2,sum))
+#   Beta <- t(rmvnorm(1,mum,Lm))
+#   ##
+# 
+#   ##update Sigma
+#   mbeta<-matrix(Beta,n,p,byrow=TRUE)
+#   iSigma<-rwish(1, eta0+n, solve( Sigma.0+t(BETAs-mbeta)%*%(BETAs-mbeta) ) )
+#   ##
+# 
+#   ##update s2
+#   RSS<-0
+#   for(j in 1:n) { RSS<-RSS+sum( (Y[[j]]-X[[j]]%*%BETAs[j,] )^2 ) }
+#   s2<-1/rgamma(1,(nu0+sum(N))/2, (nu0*s20+RSS)/2 )
+#   ##
+#   ##store results
+#  
+# 	keep.BETAs[s,] <- c(BETAs)
+# 	keep.Beta[s,] <- Beta
+# 	keep.iSigma[s,] <- c(iSigma)
+# 	keep.s2[s] <- s2
+# 
+# 	print(s)
+#  
+#   }
+# 
+# Beta.hat <- apply(keep.Beta,2,mean)
+# 
+# abline(a=Beta.hat[1],b=Beta.hat[2],col="orange",lwd=5)
+# abline(a=Beta.hat[1],b=Beta.hat[2],col="red",lwd=5,lty=3)
+# 
+# BETAs.hat <- matrix(apply(keep.BETAs,2,mean),n,p)
+# iSIGMA.hat <- matrix(apply(keep.iSigma,2,mean),2,2)
+# 
+# 
+# plot(pig.weights$num.weeks,pig.weights$weight,
+# 	xlab="Weeks",ylab="Weight",type="n",
+# 	sub="different colors are different pigs",
+# 	main="Dashed is Bayesian (borrows strength for n_i=2 case)")
+# 
+# ids <- unique(pig.weights$id.num)
+# for (i in ids[9:10])
+# {
+# 	temp <-subset(pig.weights,id.num==i)
+# 	points(temp$num.weeks,temp$weight,pch=16,col=i)
+# 	lines(abline(lm(weight~num.weeks,data=temp),col=i))
+# 	lines(abline(a=BETAs.hat[i,1],b=BETAs.hat[i,2],col=i,lty=2,lwd=3))
+# }
+# 
+# SIGMA.hat <- solve(iSIGMA.hat )
+# 
+# # Note:
+# # SIGMA.hat[1,1] is posterior mean for variance of intercepts
+# # SIGMA.hat[2,2] is posterior mean for variance of slopes
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+
+#P2
+rm(list=ls())
+## mvnormal simulation
+rmvnorm<-function(n,mu,Sigma)
+{ 
+  E<-matrix(rnorm(n*length(mu)),n,length(mu))
+  t(  t(E%*%chol(Sigma)) +c(mu))
+}
+
+## Wishart simulation
+rwish<-function(n,nu0,S0)
+{
+  sS0 <- chol(S0)
+  S<-array( dim=c( dim(S0),n ) )
+  for(i in 1:n)
+  {
+     Z <- matrix(rnorm(nu0 * dim(S0)[1]), nu0, dim(S0)[1]) %*% sS0
+     S[,,i]<- t(Z)%*%Z
+  }
+  S[,,1:n]
+}
+
+
+# read data
+glucose <- 
+read.csv("https://people.math.umass.edu/~jstauden/glucinsul.csv")
+
+head(glucose)
+
+
+
+glucose$id_num <- as.numeric(factor(glucose$subj,levels=unique(glucose$subj)))
+glucose
+
+glucose$of_b <- glucose$ofgluc - glucose$basegluc
+glucose$ofex_b <- glucose$ofexgluc - glucose$basegluc 
+glucose
+
+mean(glucose$basegluc)
+mean(glucose$ofgluc)
+mean(glucose$ofexgluc)
+mean(glucose$of_b)
+mean(glucose$ofex_b)
+
+
+
+
+library(lme4)
+fit.mixed.model <- lmer(ofgluc~basegluc+(Time|id_num),data=glucose)
+summary(fit.mixed.model)$coef
+
+
+fit.mixed.model1 <- lmer(of_b~basegluc+(Time|id_num),data=glucose)
+summary(fit.mixed.model1)$coef
+
+fit.mixed.model2 <- lmer(ofex_b~basegluc+(Time|id_num),data=glucose)
+summary(fit.mixed.model2)$coef
+
+
+fit.lm1 <- lm(of_b~basegluc,data=glucose)
+summary(fit.lm1)$coef
+
+fit.lm2 <- lm(ofex_b~basegluc,data=glucose)
+summary(fit.lm2)$coef
+
+
+#Noting difference in beta0 and beta1 estimates between the simple lm and lmer model where fit.lm1 has model 0.595+(-0.097*basegluc) and fit.mixed.model1 has model 0.663+(-0.096*basegluc). The estimate for beta0 is different, but the estimate for beta1 slope is actually quite similar. For the fit.mixed.model2 the model is 1.53+(-0.25*basegluc) and for fit.lm2 it is 1.403+(-0.234*basegluc). These beta0 and beta1 estimates across the 2 models are different. The lmer model considers correlation between observations as these are repeated observations/measure over time. 
+
+# now let's see a Bayesian solution with code modified from Hoff
+# ids<-unique(glucose$id_num)
+# Y <- X <- list(length=length(unique(glucose$id_num)))
+# n <- length(ids)
+# N <- as.vector(table(glucose$id_num))
+# counter <- 1
+# for (i in ids)
+# {
+# 	temp <- subset(glucose,id_num==i)
+# 	X[[counter]] <- cbind(rep(1,length(temp$basegluc)),temp$basegluc)
+# 	Y[[counter]] <- temp$of_b
+# 	counter <- counter+1
+# }
+
+Y <- X <- list(length=length(unique(glucose$id_num)))
+n <- length(ids)
+N <- as.vector(table(glucose$id_num))
+counter <- 1
+for (i in ids)
+{
+	temp <- subset(glucose,id_num==i)
+	X[[counter]] <- cbind(rep(1,length(temp$basegluc)),temp$basegluc)
+	Y[[counter]] <- temp$ofex_b
+	counter <- counter+1
+}
+
+
+
+#Monte Carlo iteration
+MC.N <- 10000
+# p=2
+p <- dim(X[[1]])[2]
+
+#Prior parameters
+#Non-informative priors: 
+#nu0: sample size for within group precision very small
+#s20:prior precision for within group precision very small. I think here that both prior precision big or small is non-informative.
+#eta0: sample size for variance of group means very small
+#tau0: prior precision for precision of group means
+#mu0: prior population mean 
+#gamma0: prior population variance
+nu0 <- s20 <- 0.0001
+eta0 <- p+2  
+#Setting prior thetas to 0. Thetas represent prior group means.
+Theta0 <- rep(0,p)
+Sigma.0 <- diag(rep(.0001,p))
+iSigma.0 <- solve(Sigma.0)
+L0 <- diag(rep(10000,p))
+#inverse L0 where solving for Ax=b
+iL0 <- solve(L0)
+
+# For storage per Gibbs sampling iteration
+BETAs <- matrix(NA,n,p)
+
+# For storage of estimates
+keep.BETAs <- matrix(NA,MC.N,p*n)
+keep.Beta <- matrix(NA,MC.N,p)
+keep.iSigma <- matrix(NA,MC.N,p^2)
+keep.s2 <- rep(NA,MC.N)
+
+
+# starting values 
+s2 <- 1
+iSigma <- diag(rep(1,p))
+Beta <- rep(1,p)
+
+#MCMC
+for(s in 1:MC.N) {
+  ##update beta_j 
+  for(j in 1:n) 
+  {  
+    Vj<-solve( iSigma + t(X[[j]])%*%X[[j]]/s2 )
+    Ej<-Vj%*%( iSigma%*%Beta + t(X[[j]])%*%Y[[j]]/s2 )
+    BETAs[j,]<-rmvnorm(1,Ej,Vj) 
+  } 
+  ##
+
+  ##update Beta
+  Lm<-  solve( iL0 +  n*iSigma )
+  mum<- Lm%*%( iL0%*%Theta0 + iSigma%*%apply(BETAs,2,sum))
+  Beta <- t(rmvnorm(1,mum,Lm))
+  ##
+
+  ##update Sigma
+  mbeta<-matrix(Beta,n,p,byrow=TRUE)
+  iSigma<-rwish(1, eta0+n, solve( Sigma.0+t(BETAs-mbeta)%*%(BETAs-mbeta) ) )
+  ##
+
+  ##update s2
+  RSS<-0
+  for(j in 1:n) { RSS<-RSS+sum( (Y[[j]]-X[[j]]%*%BETAs[j,] )^2 ) }
+  s2<-1/rgamma(1,(nu0+sum(N))/2, (nu0*s20+RSS)/2 )
+  ##
+  ##For storage of results
+ 
+	keep.BETAs[s,] <- c(BETAs)
+	keep.Beta[s,] <- Beta
+	keep.iSigma[s,] <- c(iSigma)
+	keep.s2[s] <- s2
+
+	print(s)
+} 
+
+Beta.hat <- apply(keep.Beta,2,mean)
+
+BETAs.hat <- matrix(apply(keep.BETAs,2,mean),n,p)
+iSIGMA.hat <- matrix(apply(keep.iSigma,2,mean),2,2)
+
+n.grid <- 401
+baseglucose.grid <- seq(min(glucose$basegluc),max(glucose$basegluc),length=401)
+X.grid <- cbind(rep(1,401),baseglucose.grid)
+S<-10
+keep.on.grid <- matrix(nrow=10,ncol=401)
+for (s in 1:S)
+  keep.on.grid[s,] <- as.vector(X.grid %*% BETAs.hat[s,])
+
+
+mean<-mean(keep.on.grid)
+lower<-quantile(keep.on.grid,0.025)
+upper<-quantile(keep.on.grid,0.975)
+mean
+lower
+upper
+
+#Results: with MC.N=10 of_b = 0.156 95% CI [-0.346,]
+#Results: with MC.N=10 ofex_b=0.010 95% CI [-0.829,0.526]
+
+#MC.N=10 (This is just a check if the process is working)
+toplot <- data.frame(cond=c("OF minus Base","OF+EX"),means=c(0.0376,0.010),lower=c(-0.399,-0.829),upper=c(0.376,0.526))
+toplot
+
+#When MC.N=10 (Note that this is a test)
+toplot <- data.frame(cond=c("OF minus Base","OF+EX"),means=c(0.0376,0.010),lower=c(-0.346,-0.829),upper(0.376,0.526))
+
+#MC.N=10000
+toplot1 <- data.frame(cond=c("OF minus Base","OF+EX"),means=c(0.056,0.0376),lower=c(-0.654,-0.805),upper(0.765,0.879))
+
+#Now plotting to suggested plot 
+plot(c(0,1),c(0,1), 
+     xlim=c(-0.5,1.5),ylim=range(c(0,c(toplot[,-1]))),type="n",axes=F,
+     ylab="Difference in mean glucose (95% CI)",
+     xlab="")
+axis(2)
+axis(1,at=c(0,1),labels=toplot$cond)
+abline(h=0,lty=2)
+points(c(0,1),toplot$means,pch=16)
+lines(c(0,0),c(toplot$lower[1],toplot$upper[1]))
+lines(c(1,1),c(toplot$lower[2],toplot$upper[2]))
+```
+
+
+```{r}
+
+# data <- 
+# read.csv("https://people.math.umass.edu/~jstauden/glucinsul.csv")
+# 
+# head(data)
+# 
+# S <- 100
+# n.grid <- 401
+# beta.post<-matrix(nrow=100,ncol=5)
+# time.grid <- seq(from=min(data$Time),to=max(data$Time),length=n.grid)
+# X.grid <- cbind(rep(1,n.grid),time.grid,time.grid^2,time.grid^3,time.grid^4)
+# keep.on.grid <- matrix(nrow=S,ncol=401)
+# for (s in 1:S)
+# keep.on.grid[s,] <- as.vector(X.grid%*%beta.post[s,])
+# 
+# # Then I found the posterior for the maximum value with:
+# 
+# max.post <- apply(keep.on.grid,1,max)
+# max.post
+# 
+# # HINT: What do you get if you use
+# apply(keep.on.grid,1,which.max)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
